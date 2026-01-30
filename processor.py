@@ -52,9 +52,15 @@ async def main():
         # Determine the file size for metadata
         file_size = os.path.getsize(output_filename)
         
+        # Bot-compatible peer resolution: Convert string to int for channel IDs
+        target_peer = peer
+        if peer.startswith('-100'):
+            # This is a channel ID, convert to integer for bot compatibility
+            target_peer = int(peer)
+        
         # Uploading...
         msg = await client.send_file(
-            peer,
+            target_peer,
             output_filename,
             caption=f"🎥 {title}",
             force_document=True
