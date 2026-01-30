@@ -3,6 +3,7 @@ import sys
 import subprocess
 import requests
 from telethon import TelegramClient, events
+import re
 import asyncio
 
 # Configuration from Environment Variables
@@ -19,12 +20,15 @@ async def main():
     folder_id = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != 'null' else None
     peer = sys.argv[4] if len(sys.argv) > 4 else 'me'
 
+    # Create a safe filename from the title
+    safe_title = re.sub(r'[^\w\s-]', '', title).strip().lower()
+    safe_title = re.sub(r'[-\s]+', '_', safe_title)
+    output_filename = f"{safe_title}.mp4"
+
     print(f"🎬 Processing Remote Upload:")
     print(f"🔗 URL: {url}")
-    print(f"📂 Title: {title}")
+    print(f"📂 Title: {title} -> {output_filename}")
     print(f"📁 Folder ID: {folder_id}")
-
-    output_filename = "temp_video.mp4"
 
     # Step 1: Download using FFmpeg
     print("⏳ Stage 1: Downloading & Converting...")
