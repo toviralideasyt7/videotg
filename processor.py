@@ -46,9 +46,9 @@ async def main():
 
     # Step 2: Upload to Telegram via Telethon
     print("⏳ Stage 2: Uploading to Telegram...")
-    async with TelegramClient('remote_bot', API_ID, API_HASH) as client:
-        await client.start(bot_token=BOT_TOKEN)
-        
+    client = TelegramClient('remote_bot', API_ID, API_HASH)
+    await client.start(bot_token=BOT_TOKEN)
+    async with client:
         # Determine the file size for metadata
         file_size = os.path.getsize(output_filename)
         
