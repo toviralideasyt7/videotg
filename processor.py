@@ -19,32 +19,66 @@ async def main():
     title = sys.argv[2]
     folder_id = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != 'null' else None
     peer = sys.argv[4] if len(sys.argv) > 4 else 'me'
+    media_type = sys.argv[5] if len(sys.argv) > 5 else 'video'
 
     # Create a safe filename from the title
     safe_title = re.sub(r'[^\w\s-]', '', title).strip().lower()
     safe_title = re.sub(r'[-\s]+', '_', safe_title)
-    output_filename = f"{safe_title}.mp4"
+    
+    is_pdf = (media_type == 'pdf') or url.lower().endswith('.pdf')
+    is_youtube = 'youtube.com' in url.lower() or 'youtu.be' in url.lower()
+    
+    if is_pdf:
+        output_filename = f"{safe_title}.pdf"
+        mime_type = "application/pdf"
+    else:
+        output_filename = f"{safe_title}.mp4"
+        mime_type = "video/mp4"
 
     print(f"🎬 Processing Remote Upload:")
     print(f"🔗 URL: {url}")
     print(f"📂 Title: {title} -> {output_filename}")
     print(f"📁 Folder ID: {folder_id}")
+    print(f"🏷️ Type: {media_type}")
 
-    # Step 1: Download using FFmpeg
-    print("⏳ Stage 1: Downloading & Converting...")
-    command = [
-        'ffmpeg',
-        '-i', url,
-        '-c', 'copy',
-        '-bsf:a', 'aac_adtstoasc',
-        output_filename,
-        '-y'
-    ]
-    
-    process = subprocess.run(command, capture_output=True, text=True)
-    if process.returncode != 0:
-        print(f"❌ FFmpeg Error: {process.stderr}")
-        return
+    # Step 1: Download
+    print("⏳ Stage 1: Downloading...")
+    if is_pdf:
+        # Download Native PDF
+        r = requests.get(url, stream=True)
+        if r.status_code == 200:
+            with open(output_filename, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        else:
+            print(f"❌ PDF Download Error: {r.status_code}")
+            return
+    elif is_youtube:
+        # Download via yt-dlp
+        command = [
+            'yt-dlp',
+            '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            '-o', output_filename,
+            url
+        ]
+        process = subprocess.run(command, capture_output=True, text=True)
+        if process.returncode != 0:
+            print(f"❌ yt-dlp Error: {process.stderr}")
+            return
+    else:
+        # Stream via FFmpeg
+        command = [
+            'ffmpeg',
+            '-i', url,
+            '-c', 'copy',
+            '-bsf:a', 'aac_adtstoasc',
+            output_filename,
+            '-y'
+        ]
+        process = subprocess.run(command, capture_output=True, text=True)
+        if process.returncode != 0:
+            print(f"❌ FFmpeg Error: {process.stderr}")
+            return
 
     print("✅ Download Complete!")
 
@@ -62,11 +96,13 @@ async def main():
             # This is a channel ID, convert to integer for bot compatibility
             target_peer = int(peer)
         
+        caption = f"📄 {title}" if is_pdf else f"🎥 {title}"
+        
         # Uploading...
         msg = await client.send_file(
             target_peer,
             output_filename,
-            caption=f"🎥 {title}",
+            caption=caption,
             force_document=True
         )
         
@@ -75,10 +111,13 @@ async def main():
 
     # Step 3: Finalize in Cloudflare Worker
     print("⏳ Stage 3: Finalizing Database Entry...")
+    
+    final_name = title if title.endswith(f".{output_filename.split('.')[-1]}") else f"{title}.{output_filename.split('.')[-1]}"
+    
     payload = {
-        "name": title if title.endswith('.mp4') else f"{title}.mp4",
+        "name": final_name,
         "size": file_size,
-        "mime_type": "video/mp4",
+        "mime_type": mime_type,
         "folder_id": folder_id,
         "telegram_id": telegram_id
     }

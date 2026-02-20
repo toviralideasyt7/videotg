@@ -21,7 +21,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Install Dependencies
-        run: pip install telethon requests
+        run: pip install telethon requests yt-dlp
 
       - name: Run Remote Processor
         env:
@@ -35,4 +35,5 @@ jobs:
             "${{ github.event.client_payload.url }}" \
             "${{ github.event.client_payload.title }}" \
             "${{ github.event.client_payload.folder_id }}" \
-            "${{ github.event.client_payload.peer }}"
+            "${{ github.event.client_payload.peer }}" \
+            "${{ github.event.client_payload.type }}"
