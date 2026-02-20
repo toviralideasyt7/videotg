@@ -3,6 +3,7 @@ import sys
 import subprocess
 import requests
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 import re
 import asyncio
 
@@ -10,6 +11,7 @@ import asyncio
 API_ID = int(os.getenv('TELEGRAM_API_ID', 0))
 API_HASH = os.getenv('TELEGRAM_API_HASH', '')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_SESSION = os.getenv('TELEGRAM_SESSION', '')
 API_URL = os.getenv('API_URL', '')
 ADMIN_TOKEN = os.getenv('ADMIN_TOKEN', '')
 
@@ -90,8 +92,17 @@ async def main():
 
     # Step 2: Upload to Telegram via Telethon
     print("⏳ Stage 2: Uploading to Telegram...")
-    client = TelegramClient('remote_bot', API_ID, API_HASH)
+    
+    # Use StringSession to avoid FloodWaitErrors from repeated bot logins on GitHub Actions
+    client = TelegramClient(StringSession(TELEGRAM_SESSION), API_ID, API_HASH)
     await client.start(bot_token=BOT_TOKEN)
+    
+    # If a new session was created (e.g. secret is empty), print it so the user can save it!
+    if not TELEGRAM_SESSION:
+        print("\n\n⚠️ IMPORTANT: No TELEGRAM_SESSION found in environment!")
+        print("Please save the following string to your GitHub Secrets as 'TELEGRAM_SESSION' to prevent FloodWaitError bans on future runs:")
+        print(client.session.save())
+        print("--------------------------------------------------\n\n")
     async with client:
         # Determine the file size for metadata
         file_size = os.path.getsize(output_filename)
