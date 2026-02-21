@@ -64,7 +64,7 @@ async def process_item(client, item):
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
             else:
-                print(f"❌ PDF Proxy Download Error: {r.status_code} - {r.text[:200]}")
+                print(f"❌ PDF Proxy Download Error: {r.status_code} - {r.text[:1000]}")
                 return
         except Exception as e:
             print(f"❌ PDF Proxy Exception: {e}")
