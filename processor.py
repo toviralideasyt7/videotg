@@ -50,17 +50,18 @@ async def process_item(client, item):
     # Step 1: Download
     print("⏳ Stage 1: Downloading...")
     if is_pdf:
-        # Avoid strict anti-bot CDNs rejecting us
+        # Avoid strict anti-bot CDNs rejecting us by using yt-dlp's native impersonation headers
         safe_url = url.replace(" ", "%20")
-        scraper = cloudscraper.create_scraper()
-        
-        r = scraper.get(safe_url, stream=True)
-        if r.status_code == 200:
-            with open(output_filename, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        else:
-            print(f"❌ PDF Download Error: {r.status_code} on {safe_url}")
+        command = [
+            'yt-dlp',
+            '--downloader', 'curl',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '-o', output_filename,
+            safe_url
+        ]
+        process = subprocess.run(command, capture_output=True, text=True)
+        if process.returncode != 0:
+            print(f"❌ yt-dlp PDF Download Error: {process.stderr}")
             return
     elif is_youtube:
         # Download via yt-dlp using Android client spoofing to bypass headless datacenter bot blocks
