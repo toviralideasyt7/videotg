@@ -1,8 +1,9 @@
 import os
 import sys
 import subprocess
-import cloudscraper
 import requests
+from curl_cffi import requests as cffi_requests
+from pytubefix import YouTube
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 import re
@@ -50,31 +51,54 @@ async def process_item(client, item):
     # Step 1: Download
     print("⏳ Stage 1: Downloading...")
     if is_pdf:
-        # Avoid strict anti-bot CDNs rejecting us by using yt-dlp's native impersonation headers
+        # Avoid strict anti-bot CDNs rejecting us by using Chrome 120 TLS Impersonation natively
         safe_url = url.replace(" ", "%20")
-        command = [
-            'yt-dlp',
-            '--downloader', 'curl',
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            '-o', output_filename,
-            safe_url
-        ]
-        process = subprocess.run(command, capture_output=True, text=True)
-        if process.returncode != 0:
-            print(f"❌ yt-dlp PDF Download Error: {process.stderr}")
+        try:
+            r = cffi_requests.get(safe_url, impersonate="chrome120")
+            if r.status_code == 200:
+                with open(output_filename, 'wb') as f:
+                    f.write(r.content)
+            else:
+                print(f"❌ curl_cffi PDF Download Error: {r.status_code} on {safe_url}")
+                return
+        except Exception as e:
+            print(f"❌ curl_cffi Exception: {e}")
             return
     elif is_youtube:
-        # Download via yt-dlp using Android client spoofing to bypass headless datacenter bot blocks
-        command = [
-            'yt-dlp',
-            '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            '--extractor-args', 'youtube:player_client=android',
-            '-o', output_filename,
-            url
-        ]
-        process = subprocess.run(command, capture_output=True, text=True)
-        if process.returncode != 0:
-            print(f"❌ yt-dlp Error: {process.stderr}")
+        import traceback
+        # Bypass Datacenter blockades by generating a Proof-of-Origin Token with PyTubeFix
+        print(f"⏳ Generating PoToken and resolving adaptive streams...")
+        try:
+            yt = YouTube(url, client='WEB')
+            
+            video_stream = yt.streams.filter(only_video=True).order_by('resolution').desc().first()
+            audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
+            
+            vid_path = f"temp_vid_{safe_title}.mp4"
+            aud_path = f"temp_aud_{safe_title}.m4a"
+            
+            video_stream.download(filename=vid_path)
+            audio_stream.download(filename=aud_path)
+            
+            command = [
+                'ffmpeg', '-y',
+                '-i', vid_path,
+                '-i', aud_path,
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                output_filename
+            ]
+            process = subprocess.run(command, capture_output=True, text=True)
+            
+            if os.path.exists(vid_path): os.remove(vid_path)
+            if os.path.exists(aud_path): os.remove(aud_path)
+            
+            if process.returncode != 0:
+                print(f"❌ FFmpeg Merge Error: {process.stderr}")
+                return
+        except Exception as e:
+            print(f"❌ PyTubeFix Exception: {e}")
+            traceback.print_exc()
             return
     else:
         # Stream via FFmpeg
