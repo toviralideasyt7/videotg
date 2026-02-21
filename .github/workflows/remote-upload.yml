@@ -31,7 +31,6 @@ jobs:
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           API_URL: ${{ secrets.API_URL }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
-          YOUTUBE_API_URL: ${{ secrets.YOUTUBE_API_URL }}
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+
         run: |
           python processor.py '${{ toJSON(github.event.client_payload.items) }}'
