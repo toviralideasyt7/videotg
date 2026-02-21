@@ -2,8 +2,6 @@ import os
 import sys
 import subprocess
 import requests
-from curl_cffi import requests as cffi_requests
-from pytubefix import YouTube
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 import re
@@ -51,55 +49,27 @@ async def process_item(client, item):
     # Step 1: Download
     print("⏳ Stage 1: Downloading...")
     if is_pdf:
-        # Avoid strict anti-bot CDNs rejecting us by using Chrome 120 TLS Impersonation natively
+        # Route through Cloudflare Worker proxy to bypass datacenter IP WAF blocks
         safe_url = url.replace(" ", "%20")
+        proxy_url = f"https://careerwillvideo-worker.xapipro.workers.dev/api/proxy-download?url={safe_url}"
         try:
-            r = cffi_requests.get(safe_url, impersonate="chrome120")
+            r = requests.get(proxy_url, stream=True)
             if r.status_code == 200:
                 with open(output_filename, 'wb') as f:
-                    f.write(r.content)
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
             else:
-                print(f"❌ curl_cffi PDF Download Error: {r.status_code} on {safe_url}")
+                print(f"❌ PDF Proxy Download Error: {r.status_code} - {r.text[:200]}")
                 return
         except Exception as e:
-            print(f"❌ curl_cffi Exception: {e}")
+            print(f"❌ PDF Proxy Exception: {e}")
             return
     elif is_youtube:
-        import traceback
-        # Bypass Datacenter blockades by generating a Proof-of-Origin Token with PyTubeFix
-        print(f"⏳ Generating PoToken and resolving adaptive streams...")
-        try:
-            yt = YouTube(url, client='WEB')
-            
-            video_stream = yt.streams.filter(only_video=True).order_by('resolution').desc().first()
-            audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
-            
-            vid_path = f"temp_vid_{safe_title}.mp4"
-            aud_path = f"temp_aud_{safe_title}.m4a"
-            
-            video_stream.download(filename=vid_path)
-            audio_stream.download(filename=aud_path)
-            
-            command = [
-                'ffmpeg', '-y',
-                '-i', vid_path,
-                '-i', aud_path,
-                '-c:v', 'copy',
-                '-c:a', 'aac',
-                output_filename
-            ]
-            process = subprocess.run(command, capture_output=True, text=True)
-            
-            if os.path.exists(vid_path): os.remove(vid_path)
-            if os.path.exists(aud_path): os.remove(aud_path)
-            
-            if process.returncode != 0:
-                print(f"❌ FFmpeg Merge Error: {process.stderr}")
-                return
-        except Exception as e:
-            print(f"❌ PyTubeFix Exception: {e}")
-            traceback.print_exc()
-            return
+        # YouTube aggressively blocks ALL datacenter IPs (GitHub Actions, Azure, AWS, etc.)
+        # No library (yt-dlp, pytubefix) can bypass this without a residential proxy.
+        print("⏭️ SKIPPED: YouTube videos cannot be downloaded from GitHub Actions datacenter IPs.")
+        print("   ℹ️ Upload this video manually from your local PC using: python processor.py")
+        return
     else:
         # Stream via FFmpeg
         command = [

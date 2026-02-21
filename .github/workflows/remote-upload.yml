@@ -26,7 +26,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Install Dependencies
-        run: pip install telethon curl_cffi pytubefix requests yt-dlp
+        run: pip install telethon requests
 
       - name: Run Remote Processor
         env:
