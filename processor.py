@@ -48,33 +48,17 @@ async def process_item(client, item):
 
     # Step 1: Download
     print("⏳ Stage 1: Downloading...")
-    if is_pdf:
-        # Route through Cloudflare Worker proxy to bypass datacenter IP WAF blocks
-        safe_url = url.replace(" ", "%20")
-        proxy_url = f"https://careerwillvideo-worker.xapipro.workers.dev/api/proxy-download?url={safe_url}"
-        try:
-            r = requests.get(proxy_url, stream=True)
-            if r.status_code == 200:
-                with open(output_filename, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            else:
-                print(f"❌ PDF Proxy Download Error: {r.status_code} - {r.text[:200]}")
-                return
-        except Exception as e:
-            print(f"❌ PDF Proxy Exception: {e}")
-            return
-    elif is_youtube:
-        # Route through external YouTube download API (hosted on residential IP)
-        yt_api_url = os.getenv('YOUTUBE_API_URL', '')
-        if not yt_api_url:
-            print("⏭️ SKIPPED: No YOUTUBE_API_URL configured. Set it to your deployed youtube-download-api.")
+    if is_pdf or is_youtube:
+        # Route through external media proxy (hosted on residential IP / flexible container)
+        proxy_api_url = os.getenv('YOUTUBE_API_URL', '')
+        if not proxy_api_url:
+            print("⏭️ SKIPPED: No YOUTUBE_API_URL configured. Set it to your deployed proxy API.")
             return
         
-        print(f"📡 Requesting download from YouTube API proxy...")
+        print(f"📡 Requesting download from external media proxy...")
         try:
             r = requests.get(
-                f"{yt_api_url}/api/download",
+                f"{proxy_api_url}/api/download",
                 params={"url": url, "title": title},
                 stream=True,
                 timeout=600  # 10 min timeout for large videos
@@ -85,10 +69,10 @@ async def process_item(client, item):
                         f.write(chunk)
             else:
                 error_msg = r.text[:300]
-                print(f"❌ YouTube API Download Error: {r.status_code} - {error_msg}")
+                print(f"❌ Proxy Download Error: {r.status_code} - {error_msg}")
                 return
         except Exception as e:
-            print(f"❌ YouTube API Exception: {e}")
+            print(f"❌ Proxy Exception: {e}")
             return
     else:
         # Stream via FFmpeg
