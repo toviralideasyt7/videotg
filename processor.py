@@ -48,14 +48,36 @@ async def process_item(client, item):
 
     # Step 1: Download
     print("⏳ Stage 1: Downloading...")
-    if is_pdf or is_youtube:
-        # Route through external media proxy (hosted on residential IP / flexible container)
+    if is_pdf:
+        # Route through Cloudflare Worker proxy to bypass datacenter IP WAF blocks
+        safe_url = url.replace(" ", "%20")
+        proxy_url = f"https://careerwillvideo-worker.xapipro.workers.dev/api/proxy-download?url={safe_url}"
+        
+        print(f"📡 Requesting download from Cloudflare Worker proxy...")
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            r = requests.get(proxy_url, headers=headers, stream=True)
+            if r.status_code == 200:
+                with open(output_filename, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            else:
+                print(f"❌ PDF Proxy Download Error: {r.status_code} - {r.text[:200]}")
+                return
+        except Exception as e:
+            print(f"❌ PDF Proxy Exception: {e}")
+            return
+            
+    elif is_youtube:
+        # Route through external media proxy (hosted on residential IP)
         proxy_api_url = os.getenv('YOUTUBE_API_URL', '')
         if not proxy_api_url:
             print("⏭️ SKIPPED: No YOUTUBE_API_URL configured. Set it to your deployed proxy API.")
             return
         
-        print(f"📡 Requesting download from external media proxy...")
+        print(f"📡 Requesting download from Universal Media Proxy...")
         try:
             r = requests.get(
                 f"{proxy_api_url}/api/download",
