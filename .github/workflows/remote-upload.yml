@@ -16,11 +16,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          
-      - name: Set up Node.js (For yt-dlp YouTube Bot Bypassing)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
 
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -36,5 +31,7 @@ jobs:
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           API_URL: ${{ secrets.API_URL }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          YOUTUBE_API_URL: ${{ secrets.YOUTUBE_API_URL }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           python processor.py '${{ toJSON(github.event.client_payload.items) }}'

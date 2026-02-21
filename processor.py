@@ -65,11 +65,33 @@ async def process_item(client, item):
             print(f"❌ PDF Proxy Exception: {e}")
             return
     elif is_youtube:
-        # YouTube aggressively blocks ALL datacenter IPs (GitHub Actions, Azure, AWS, etc.)
-        # No library (yt-dlp, pytubefix) can bypass this without a residential proxy.
-        print("⏭️ SKIPPED: YouTube videos cannot be downloaded from GitHub Actions datacenter IPs.")
-        print("   ℹ️ Upload this video manually from your local PC using: python processor.py")
-        return
+        # Route through external YouTube download API (hosted on residential IP)
+        yt_api_url = os.getenv('YOUTUBE_API_URL', '')
+        yt_api_key = os.getenv('YOUTUBE_API_KEY', '')
+        if not yt_api_url:
+            print("⏭️ SKIPPED: No YOUTUBE_API_URL configured. Set it to your deployed youtube-download-api.")
+            return
+        
+        print(f"📡 Requesting download from YouTube API proxy...")
+        try:
+            r = requests.post(
+                f"{yt_api_url}/api/download",
+                json={"url": url, "title": title},
+                headers={"Authorization": f"Bearer {yt_api_key}"},
+                stream=True,
+                timeout=600  # 10 min timeout for large videos
+            )
+            if r.status_code == 200:
+                with open(output_filename, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            else:
+                error_msg = r.text[:300]
+                print(f"❌ YouTube API Download Error: {r.status_code} - {error_msg}")
+                return
+        except Exception as e:
+            print(f"❌ YouTube API Exception: {e}")
+            return
     else:
         # Stream via FFmpeg
         command = [
