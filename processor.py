@@ -108,17 +108,49 @@ async def process_item(client, item):
         target_peer = int(peer)
         
     caption = f"📄 {title}" if is_pdf else f"🎥 {title}"
-        
-    # Uploading...
-    msg = await client.send_file(
-        target_peer,
-        output_filename,
-        caption=caption,
-        force_document=True
-    )
+    
+    last_printed_percent = -1
+    def progress_callback(current, total):
+        nonlocal last_printed_percent
+        percent = int((current / total) * 100)
+        # Log every 5% to avoid spamming the GitHub Action stdout
+        if percent % 5 == 0 and percent != last_printed_percent:
+            print(f"📡 Uploading... {percent}% ({current / 1024 / 1024:.2f}MB / {total / 1024 / 1024:.2f}MB)")
+            last_printed_percent = percent
+            
+    # Uploading with Retry Logic for Connection Drops [Errno 104]
+    max_retries = 3
+    retry_count = 0
+    msg = None
+    
+    while retry_count < max_retries:
+        try:
+            msg = await client.send_file(
+                target_peer,
+                output_filename,
+                caption=caption,
+                force_document=True,
+                progress_callback=progress_callback
+            )
+            break # Success! Break out of the retry loop.
+        except (ConnectionError, asyncio.TimeoutError) as e:
+            retry_count += 1
+            print(f"\n⚠️ Telegram Connection Dropped (Attempt {retry_count}/{max_retries}): {e}")
+            if retry_count >= max_retries:
+                print("❌ Max retries reached. Upload failed.")
+                return # Abort this item and move to next
+            print("⏳ Cooling down for 10 seconds before retrying...")
+            await asyncio.sleep(10)
+        except Exception as e:
+            print(f"\n❌ Fatal Upload Error: {e}")
+            return
+            
+    if not msg:
+        print("❌ Failed to resolve message object after uploads.")
+        return
         
     telegram_id = str(msg.id)
-    print(f"✅ Upload Complete! Telegram Message ID: {telegram_id}")
+    print(f"\n✅ Upload Complete! Telegram Message ID: {telegram_id}")
 
     # Step 3: Finalize in Cloudflare Worker
     print("⏳ Stage 3: Finalizing Database Entry...")
