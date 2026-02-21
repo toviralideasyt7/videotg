@@ -63,10 +63,11 @@ async def process_item(client, item):
             print(f"❌ PDF Download Error: {r.status_code} on {safe_url}")
             return
     elif is_youtube:
-        # Download via yt-dlp
+        # Download via yt-dlp using Android client spoofing to bypass headless datacenter bot blocks
         command = [
             'yt-dlp',
             '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            '--extractor-args', 'youtube:player_client=android',
             '-o', output_filename,
             url
         ]
