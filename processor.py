@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import cloudscraper
 import requests
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -49,17 +50,11 @@ async def process_item(client, item):
     # Step 1: Download
     print("⏳ Stage 1: Downloading...")
     if is_pdf:
-        # Encode URL spaces to bypass strict AWS/Cloudflare CDNs blocking raw spaces (403 Forbidden)
-        parsed_url = urllib.parse.urlparse(url)
-        encoded_path = urllib.parse.quote(parsed_url.path)
-        safe_url = urllib.parse.urlunparse((parsed_url.scheme, parsed_url.netloc, encoded_path, parsed_url.params, parsed_url.query, parsed_url.fragment))
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5'
-        }
-        r = requests.get(safe_url, stream=True, headers=headers)
+        # Avoid strict anti-bot CDNs rejecting us
+        safe_url = url.replace(" ", "%20")
+        scraper = cloudscraper.create_scraper()
+        
+        r = scraper.get(safe_url, stream=True)
         if r.status_code == 200:
             with open(output_filename, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
@@ -176,7 +171,11 @@ async def process_item(client, item):
         print("✨ Backend Complete! Notifying Cloudflare Worker Sync...")
         # Mark as uploaded strictly if successful
         sync_payload = {"id": db_id, "type": media_type}
-        sync_res = requests.post(f"https://careerwillvideo-worker.xapipro.workers.dev/api/mark_uploaded", json=sync_payload, headers=headers)
+        sync_headers = {
+            "Authorization": f"Bearer {ADMIN_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        sync_res = requests.post(f"https://careerwillvideo-worker.xapipro.workers.dev/api/mark_uploaded", json=sync_payload, headers=sync_headers)
         if sync_res.status_code == 200:
              print("✅ Fully Synced across all databases!")
         else:

@@ -21,7 +21,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Install Dependencies
-        run: pip install telethon requests yt-dlp
+        run: pip install telethon cloudscraper requests yt-dlp
 
       - name: Run Remote Processor
         env:
