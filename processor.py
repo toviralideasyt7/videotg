@@ -67,17 +67,15 @@ async def process_item(client, item):
     elif is_youtube:
         # Route through external YouTube download API (hosted on residential IP)
         yt_api_url = os.getenv('YOUTUBE_API_URL', '')
-        yt_api_key = os.getenv('YOUTUBE_API_KEY', '')
         if not yt_api_url:
             print("⏭️ SKIPPED: No YOUTUBE_API_URL configured. Set it to your deployed youtube-download-api.")
             return
         
         print(f"📡 Requesting download from YouTube API proxy...")
         try:
-            r = requests.post(
+            r = requests.get(
                 f"{yt_api_url}/api/download",
-                json={"url": url, "title": title},
-                headers={"Authorization": f"Bearer {yt_api_key}"},
+                params={"url": url, "title": title},
                 stream=True,
                 timeout=600  # 10 min timeout for large videos
             )
