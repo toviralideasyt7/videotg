@@ -6,6 +6,8 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 import re
 import asyncio
+import json
+import urllib.parse
 
 # Configuration from Environment Variables
 API_ID = int(os.getenv('TELEGRAM_API_ID', 0))
@@ -15,14 +17,14 @@ TELEGRAM_SESSION = os.getenv('TELEGRAM_SESSION', '')
 API_URL = os.getenv('API_URL', '')
 ADMIN_TOKEN = os.getenv('ADMIN_TOKEN', '')
 
-async def main():
-    # Input from client_payload
-    url = sys.argv[1]
-    title = sys.argv[2]
-    folder_id = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != 'null' else None
-    peer = sys.argv[4] if len(sys.argv) > 4 else 'me'
-    media_type = sys.argv[5] if len(sys.argv) > 5 else 'video'
-    bearer_token = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] != 'null' else ADMIN_TOKEN
+async def process_item(client, item):
+    url = item.get('url', '')
+    title = item.get('title', '')
+    folder_id = item.get('folder_id')
+    peer = item.get('peer', 'me')
+    media_type = item.get('type', 'video')
+    db_id = item.get('id')
+    bearer_token = item.get('token', ADMIN_TOKEN)
 
     # Create a safe filename from the title
     safe_title = re.sub(r'[^\w\s-]', '', title).strip().lower()
@@ -38,7 +40,7 @@ async def main():
         output_filename = f"{safe_title}.mp4"
         mime_type = "video/mp4"
 
-    print(f"🎬 Processing Remote Upload:")
+    print(f"\n🎬 Processing Remote Upload:")
     print(f"🔗 URL: {url}")
     print(f"📂 Title: {title} -> {output_filename}")
     print(f"📁 Folder ID: {folder_id}")
@@ -47,19 +49,23 @@ async def main():
     # Step 1: Download
     print("⏳ Stage 1: Downloading...")
     if is_pdf:
-        # Download Native PDF
+        # Encode URL spaces to bypass strict AWS/Cloudflare CDNs blocking raw spaces (403 Forbidden)
+        parsed_url = urllib.parse.urlparse(url)
+        encoded_path = urllib.parse.quote(parsed_url.path)
+        safe_url = urllib.parse.urlunparse((parsed_url.scheme, parsed_url.netloc, encoded_path, parsed_url.params, parsed_url.query, parsed_url.fragment))
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5'
         }
-        r = requests.get(url, stream=True, headers=headers)
+        r = requests.get(safe_url, stream=True, headers=headers)
         if r.status_code == 200:
             with open(output_filename, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
         else:
-            print(f"❌ PDF Download Error: {r.status_code}")
+            print(f"❌ PDF Download Error: {r.status_code} on {safe_url}")
             return
     elif is_youtube:
         # Download via yt-dlp
@@ -92,39 +98,27 @@ async def main():
 
     # Step 2: Upload to Telegram via Telethon
     print("⏳ Stage 2: Uploading to Telegram...")
-    
-    # Use StringSession to avoid FloodWaitErrors from repeated bot logins on GitHub Actions
-    client = TelegramClient(StringSession(TELEGRAM_SESSION), API_ID, API_HASH)
-    await client.start(bot_token=BOT_TOKEN)
-    
-    # If a new session was created (e.g. secret is empty), print it so the user can save it!
-    if not TELEGRAM_SESSION:
-        print("\n\n⚠️ IMPORTANT: No TELEGRAM_SESSION found in environment!")
-        print("Please save the following string to your GitHub Secrets as 'TELEGRAM_SESSION' to prevent FloodWaitError bans on future runs:")
-        print(client.session.save())
-        print("--------------------------------------------------\n\n")
-    async with client:
-        # Determine the file size for metadata
-        file_size = os.path.getsize(output_filename)
+    # Determine the file size for metadata
+    file_size = os.path.getsize(output_filename)
         
-        # Bot-compatible peer resolution: Convert string to int for channel IDs
-        target_peer = peer
-        if peer.startswith('-100'):
-            # This is a channel ID, convert to integer for bot compatibility
-            target_peer = int(peer)
+    # Bot-compatible peer resolution: Convert string to int for channel IDs
+    target_peer = peer
+    if peer.startswith('-100'):
+        # This is a channel ID, convert to integer for bot compatibility
+        target_peer = int(peer)
         
-        caption = f"📄 {title}" if is_pdf else f"🎥 {title}"
+    caption = f"📄 {title}" if is_pdf else f"🎥 {title}"
         
-        # Uploading...
-        msg = await client.send_file(
-            target_peer,
-            output_filename,
-            caption=caption,
-            force_document=True
-        )
+    # Uploading...
+    msg = await client.send_file(
+        target_peer,
+        output_filename,
+        caption=caption,
+        force_document=True
+    )
         
-        telegram_id = str(msg.id)
-        print(f"✅ Upload Complete! Telegram Message ID: {telegram_id}")
+    telegram_id = str(msg.id)
+    print(f"✅ Upload Complete! Telegram Message ID: {telegram_id}")
 
     # Step 3: Finalize in Cloudflare Worker
     print("⏳ Stage 3: Finalizing Database Entry...")
@@ -147,13 +141,53 @@ async def main():
     res = requests.post(f"{API_URL}/api/upload/finalize", json=payload, headers=headers)
     
     if res.status_code == 200:
-        print("✨ All done! File is now visible in your Telegram Drive.")
+        print("✨ Backend Complete! Notifying Cloudflare Worker Sync...")
+        # Mark as uploaded strictly if successful
+        sync_payload = {"id": db_id, "type": media_type}
+        sync_res = requests.post(f"https://careerwillvideo-worker.xapipro.workers.dev/api/mark_uploaded", json=sync_payload, headers=headers)
+        if sync_res.status_code == 200:
+             print("✅ Fully Synced across all databases!")
+        else:
+             print(f"⚠️ Failed to mark item as uploaded in Worker DB: {sync_res.text}")
     else:
         print(f"❌ Finalization failed: {res.text}")
 
     # Cleanup
     if os.path.exists(output_filename):
         os.remove(output_filename)
+
+async def main():
+    if len(sys.argv) < 2:
+        print("Usage: python processor.py '[{\"url\":\"...\", ...}]'")
+        return
+
+    try:
+        payload_str = sys.argv[1]
+        items = json.loads(payload_str)
+    except Exception as e:
+        print(f"Failed to parse input JSON array: {e}")
+        return
+
+    if not isinstance(items, list):
+        items = [items] # fallback if it's a single object
+
+    print(f"🚀 Booting GitHub Remote Uploader. Preparing to serialize {len(items)} items concurrently...")
+
+    # Boot the global reusable Telegram Auth Context
+    client = TelegramClient(StringSession(TELEGRAM_SESSION), API_ID, API_HASH)
+    await client.start(bot_token=BOT_TOKEN)
+    
+    if not TELEGRAM_SESSION:
+        print("\n\n⚠️ IMPORTANT: No TELEGRAM_SESSION found in environment!")
+        print("Please save the following string to your GitHub Secrets as 'TELEGRAM_SESSION' to prevent FloodWaitError bans on future runs:")
+        print(client.session.save())
+        print("--------------------------------------------------\n\n")
+
+    async with client:
+         for item in items:
+             await process_item(client, item)
+             # Cool down gracefully between sequential uploads to avoid telegram generic restrictions
+             await asyncio.sleep(2)
 
 if __name__ == "__main__":
     asyncio.run(main())

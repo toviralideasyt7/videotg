@@ -32,10 +32,4 @@ jobs:
           API_URL: ${{ secrets.API_URL }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
         run: |
-          python processor.py \
-            "${{ github.event.client_payload.url }}" \
-            "${{ github.event.client_payload.title }}" \
-            "${{ github.event.client_payload.folder_id }}" \
-            "${{ github.event.client_payload.peer }}" \
-            "${{ github.event.client_payload.type }}" \
-            "${{ github.event.client_payload.token }}"
+          python processor.py '${{ toJSON(github.event.client_payload.items) }}'
