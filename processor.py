@@ -247,12 +247,15 @@ async def process_item(client, item):
             last_printed_percent = percent
             
     # Uploading with Retry Logic for Connection Drops [Errno 104]
-    max_retries = 3
+    max_retries = 4
     retry_count = 0
     msg = None
     
     while retry_count < max_retries:
         try:
+            if not client.is_connected():
+                await client.connect()
+
             msg = await client.send_file(
                 target_peer,
                 output_filename,
@@ -262,6 +265,18 @@ async def process_item(client, item):
                 progress_callback=progress_callback
             )
             break # Success! Break out of the retry loop.
+        except asyncio.CancelledError as e:
+            retry_count += 1
+            print(f"\n⚠️ Upload operation cancelled during network reset (Attempt {retry_count}/{max_retries}): {e}")
+            if retry_count >= max_retries:
+                print("❌ Max retries reached after cancellation. Upload failed.")
+                return
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            await asyncio.sleep(retry_count * 8)
+            continue
         except FloodWaitError as e:
             wait_time = int(getattr(e, 'seconds', 30)) + 1
             print(f"\n⚠️ Telegram FloodWait for {wait_time}s.")
@@ -359,7 +374,18 @@ async def main():
 
     async with client:
          for item in items:
-             await process_item(client, item)
+             try:
+                 await process_item(client, item)
+             except asyncio.CancelledError as e:
+                 print(f"⚠️ Item processing cancelled due transient network issue: {e}")
+                 try:
+                     if client.is_connected():
+                         await client.disconnect()
+                     await client.connect()
+                 except Exception as reconnect_error:
+                     print(f"⚠️ Reconnect after cancellation failed: {reconnect_error}")
+             except Exception as e:
+                 print(f"⚠️ Item processing crashed but runner will continue: {e}")
              # Cool down gracefully between sequential uploads to avoid telegram generic restrictions
              await asyncio.sleep(ITEM_COOLDOWN_SECONDS)
 
