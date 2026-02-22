@@ -4,10 +4,19 @@ import subprocess
 import requests
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.errors import FloodWaitError
 import re
 import asyncio
 import json
 import urllib.parse
+import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+try:
+    from curl_cffi import requests as curl_requests
+except Exception:
+    curl_requests = None
 
 # Configuration from Environment Variables
 API_ID = int(os.getenv('TELEGRAM_API_ID', 0))
@@ -16,6 +25,106 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_SESSION = os.getenv('TELEGRAM_SESSION', '')
 API_URL = os.getenv('API_URL', '')
 ADMIN_TOKEN = os.getenv('ADMIN_TOKEN', '')
+PDF_PROXY_URL = os.getenv('PDF_PROXY_URL', 'https://careerwillvideo-worker.xapipro.workers.dev/api/proxy-download')
+DOWNLOAD_CHUNK_SIZE = int(os.getenv('DOWNLOAD_CHUNK_SIZE', 262144))  # 256KB
+UPLOAD_PART_SIZE_KB = max(64, min(512, int(os.getenv('UPLOAD_PART_SIZE_KB', 512))))
+UPLOAD_PROGRESS_STEP_PERCENT = max(1, min(25, int(os.getenv('UPLOAD_PROGRESS_STEP_PERCENT', 5))))
+ITEM_COOLDOWN_SECONDS = float(os.getenv('ITEM_COOLDOWN_SECONDS', '1'))
+
+
+def create_http_session():
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(["GET", "POST"])
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=16, pool_maxsize=16)
+    session = requests.Session()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+HTTP_SESSION = create_http_session()
+
+
+def stream_response_to_file(response, output_filename):
+    with open(output_filename, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+            if chunk:
+                f.write(chunk)
+
+
+def download_pdf_via_worker(pdf_url, output_filename):
+    encoded_target = urllib.parse.quote(pdf_url, safe='')
+    proxy_url = f"{PDF_PROXY_URL}?url={encoded_target}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    max_attempts = 3
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            print(f"📡 Requesting download from Cloudflare Worker proxy... (attempt {attempt}/{max_attempts})")
+            r = HTTP_SESSION.get(proxy_url, headers=headers, stream=True, timeout=(20, 300))
+            if r.status_code == 200:
+                stream_response_to_file(r, output_filename)
+                return True
+
+            error_preview = (r.text or '')[:1000]
+            cf_ray = r.headers.get('cf-ray', 'n/a')
+            server = r.headers.get('server', 'n/a')
+            print(f"❌ PDF Proxy Download Error: {r.status_code} - {error_preview}")
+            print(f"📋 Proxy response headers: server={server}, cf-ray={cf_ray}")
+            if attempt < max_attempts and r.status_code in (403, 408, 409, 425, 429, 500, 502, 503, 504):
+                sleep_s = attempt * 3
+                print(f"⏳ Retrying proxy in {sleep_s}s...")
+                time.sleep(sleep_s)
+                continue
+            return False
+        except requests.RequestException as e:
+            print(f"❌ PDF Proxy Exception: {e}")
+            if attempt < max_attempts:
+                sleep_s = attempt * 3
+                print(f"⏳ Retrying proxy in {sleep_s}s...")
+                time.sleep(sleep_s)
+            else:
+                return False
+
+    return False
+
+
+def download_pdf_via_curl_cffi(pdf_url, output_filename):
+    if curl_requests is None:
+        print("⚠️ curl_cffi not available, skipping direct browser-impersonation fallback.")
+        return False
+
+    safe_pdf_url = pdf_url.replace(" ", "%20")
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        try:
+            print(f"📡 Trying direct browser-impersonated PDF download... (attempt {attempt}/{max_attempts})")
+            r = curl_requests.get(
+                safe_pdf_url,
+                impersonate=os.getenv('CURL_IMPERSONATE', 'chrome120'),
+                timeout=300
+            )
+            if r.status_code == 200:
+                with open(output_filename, 'wb') as f:
+                    f.write(r.content)
+                return True
+            error_preview = (r.text or '')[:500]
+            print(f"❌ Direct PDF fallback error: {r.status_code} - {error_preview}")
+        except Exception as e:
+            print(f"❌ Direct PDF fallback exception: {e}")
+        if attempt < max_attempts:
+            sleep_s = attempt * 2
+            print(f"⏳ Retrying direct fallback in {sleep_s}s...")
+            time.sleep(sleep_s)
+    return False
 
 async def process_item(client, item):
     url = item.get('url', '')
@@ -49,25 +158,12 @@ async def process_item(client, item):
     # Step 1: Download
     print("⏳ Stage 1: Downloading...")
     if is_pdf:
-        # Route through Cloudflare Worker proxy to bypass datacenter IP WAF blocks
-        safe_url = url.replace(" ", "%20")
-        proxy_url = f"https://careerwillvideo-worker.xapipro.workers.dev/api/proxy-download?url={safe_url}"
-        
-        print(f"📡 Requesting download from Cloudflare Worker proxy...")
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-            r = requests.get(proxy_url, headers=headers, stream=True)
-            if r.status_code == 200:
-                with open(output_filename, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            else:
-                print(f"❌ PDF Proxy Download Error: {r.status_code} - {r.text[:1000]}")
+        # First try Worker proxy, then a direct browser-impersonated fallback for regional WAF variance.
+        if not download_pdf_via_worker(url, output_filename):
+            print("⚠️ Worker proxy path failed. Falling back to direct browser-impersonation...")
+            if not download_pdf_via_curl_cffi(url, output_filename):
+                print("❌ PDF download failed on all strategies.")
                 return
-        except Exception as e:
-            print(f"❌ PDF Proxy Exception: {e}")
     elif is_youtube:
         print(f"⏭️ SKIPPED: YouTube videos are currently ignored per configuration.")
         return
@@ -105,8 +201,8 @@ async def process_item(client, item):
     def progress_callback(current, total):
         nonlocal last_printed_percent
         percent = int((current / total) * 100)
-        # Log every 5% to avoid spamming the GitHub Action stdout
-        if percent % 5 == 0 and percent != last_printed_percent:
+        # Log periodically to reduce console overhead in CI.
+        if percent % UPLOAD_PROGRESS_STEP_PERCENT == 0 and percent != last_printed_percent:
             print(f"📡 Uploading... {percent}% ({current / 1024 / 1024:.2f}MB / {total / 1024 / 1024:.2f}MB)")
             last_printed_percent = percent
             
@@ -122,17 +218,27 @@ async def process_item(client, item):
                 output_filename,
                 caption=caption,
                 force_document=True,
+                part_size_kb=UPLOAD_PART_SIZE_KB,
                 progress_callback=progress_callback
             )
             break # Success! Break out of the retry loop.
-        except (ConnectionError, asyncio.TimeoutError) as e:
+        except FloodWaitError as e:
+            wait_time = int(getattr(e, 'seconds', 30)) + 1
+            print(f"\n⚠️ Telegram FloodWait for {wait_time}s.")
+            await asyncio.sleep(wait_time)
+            retry_count += 1
+            continue
+        except (ConnectionError, asyncio.TimeoutError, OSError) as e:
             retry_count += 1
             print(f"\n⚠️ Telegram Connection Dropped (Attempt {retry_count}/{max_retries}): {e}")
             if retry_count >= max_retries:
                 print("❌ Max retries reached. Upload failed.")
                 return # Abort this item and move to next
-            print("⏳ Cooling down for 10 seconds before retrying...")
-            await asyncio.sleep(10)
+            if not client.is_connected():
+                await client.connect()
+            sleep_s = retry_count * 8
+            print(f"⏳ Cooling down for {sleep_s} seconds before retrying...")
+            await asyncio.sleep(sleep_s)
         except Exception as e:
             print(f"\n❌ Fatal Upload Error: {e}")
             return
@@ -199,7 +305,7 @@ async def main():
     if not isinstance(items, list):
         items = [items] # fallback if it's a single object
 
-    print(f"🚀 Booting GitHub Remote Uploader. Preparing to serialize {len(items)} items concurrently...")
+    print(f"🚀 Booting GitHub Remote Uploader. Preparing to process {len(items)} items sequentially...")
 
     # Boot the global reusable Telegram Auth Context
     client = TelegramClient(StringSession(TELEGRAM_SESSION), API_ID, API_HASH)
@@ -215,7 +321,7 @@ async def main():
          for item in items:
              await process_item(client, item)
              # Cool down gracefully between sequential uploads to avoid telegram generic restrictions
-             await asyncio.sleep(2)
+             await asyncio.sleep(ITEM_COOLDOWN_SECONDS)
 
 if __name__ == "__main__":
     asyncio.run(main())

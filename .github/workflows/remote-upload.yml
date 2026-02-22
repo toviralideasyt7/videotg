@@ -21,7 +21,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Install Dependencies
-        run: pip install telethon requests
+        run: pip install -r requirements.txt
 
       - name: Run Remote Processor
         env:
