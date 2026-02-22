@@ -29,8 +29,9 @@ ADMIN_TOKEN = os.getenv('ADMIN_TOKEN', '')
 PDF_PROXY_URL = os.getenv('PDF_PROXY_URL', 'https://careerwillvideo-worker.xapipro.workers.dev/api/proxy-download')
 DOWNLOAD_CHUNK_SIZE = int(os.getenv('DOWNLOAD_CHUNK_SIZE', 262144))  # 256KB
 UPLOAD_PART_SIZE_KB = max(64, min(512, int(os.getenv('UPLOAD_PART_SIZE_KB', 512))))
-UPLOAD_PROGRESS_STEP_PERCENT = max(1, min(25, int(os.getenv('UPLOAD_PROGRESS_STEP_PERCENT', 5))))
-ITEM_COOLDOWN_SECONDS = float(os.getenv('ITEM_COOLDOWN_SECONDS', '1'))
+UPLOAD_PROGRESS_STEP_PERCENT = max(1, min(25, int(os.getenv('UPLOAD_PROGRESS_STEP_PERCENT', 10))))
+ITEM_COOLDOWN_SECONDS = float(os.getenv('ITEM_COOLDOWN_SECONDS', '0.2'))
+MAX_VIDEOS_PER_RUN = max(0, int(os.getenv('MAX_VIDEOS_PER_RUN', 3)))
 
 
 def create_http_session():
@@ -52,10 +53,36 @@ def create_http_session():
 HTTP_SESSION = create_http_session()
 
 
+def is_pdf_item(item):
+    media_type = (item.get('type') or '').lower()
+    url = (item.get('url') or '').lower()
+    return media_type == 'pdf' or url.endswith('.pdf')
+
+
+def reorder_and_cap_items(items):
+    pdf_items = [item for item in items if is_pdf_item(item)]
+    video_items = [item for item in items if not is_pdf_item(item)]
+    selected_videos = video_items[:MAX_VIDEOS_PER_RUN]
+    return pdf_items + selected_videos, len(pdf_items), len(video_items), len(selected_videos)
+
+
+def create_telegram_client(session):
+    return TelegramClient(
+        session,
+        API_ID,
+        API_HASH,
+        auto_reconnect=True,
+        connection_retries=6,
+        request_retries=6,
+        retry_delay=2,
+        timeout=120
+    )
+
+
 async def create_started_client():
     # Prefer configured StringSession for continuity, but auto-heal if Telegram revoked it.
     if TELEGRAM_SESSION:
-        client = TelegramClient(StringSession(TELEGRAM_SESSION), API_ID, API_HASH)
+        client = create_telegram_client(StringSession(TELEGRAM_SESSION))
         try:
             await client.start(bot_token=BOT_TOKEN)
             return client, "string"
@@ -67,7 +94,7 @@ async def create_started_client():
             except Exception:
                 pass
 
-    client = TelegramClient(MemorySession(), API_ID, API_HASH)
+    client = create_telegram_client(MemorySession())
     await client.start(bot_token=BOT_TOKEN)
     return client, "memory"
 
@@ -381,7 +408,10 @@ async def main():
     if not isinstance(items, list):
         items = [items] # fallback if it's a single object
 
-    print(f"🚀 Booting GitHub Remote Uploader. Preparing to process {len(items)} items sequentially...")
+    original_count = len(items)
+    items, pdf_count, video_count, selected_video_count = reorder_and_cap_items(items)
+    print(f"🚀 Booting GitHub Remote Uploader. Received {original_count} items.")
+    print(f"📦 Queue plan: {pdf_count} PDFs first, then {selected_video_count}/{video_count} videos (max {MAX_VIDEOS_PER_RUN}).")
 
     # Boot the global reusable Telegram Auth Context
     client, session_mode = await create_started_client()
@@ -413,4 +443,7 @@ async def main():
              await asyncio.sleep(ITEM_COOLDOWN_SECONDS)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except asyncio.CancelledError:
+        print("⚠️ Main task was cancelled. Exiting gracefully.")
