@@ -58,12 +58,38 @@ def stream_response_to_file(response, output_filename):
                 f.write(chunk)
 
 
+def build_browser_headers(target_url):
+    target_origin = urllib.parse.urlsplit(target_url).scheme + "://" + urllib.parse.urlsplit(target_url).netloc
+    return {
+        'sec-ch-ua': '"Not:A-Brand";v="99", "Google Chrome";v="120", "Chromium";v="120"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en;q=0.9,hi-IN;q=0.8,hi;q=0.7',
+        'Referer': target_origin + '/',
+        'Origin': target_origin,
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0'
+    }
+
+
+def is_auth_block(status_code, text):
+    t = (text or '').lower()
+    return status_code in (401, 403) and (
+        'not authorized' in t or
+        'unauthorized' in t or
+        'access denied' in t
+    )
+
+
 def download_pdf_via_worker(pdf_url, output_filename):
     encoded_target = urllib.parse.quote(pdf_url, safe='')
     proxy_url = f"{PDF_PROXY_URL}?url={encoded_target}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
+    headers = build_browser_headers(pdf_url)
     max_attempts = 3
 
     for attempt in range(1, max_attempts + 1):
@@ -79,6 +105,9 @@ def download_pdf_via_worker(pdf_url, output_filename):
             server = r.headers.get('server', 'n/a')
             print(f"❌ PDF Proxy Download Error: {r.status_code} - {error_preview}")
             print(f"📋 Proxy response headers: server={server}, cf-ray={cf_ray}")
+            if r.status_code == 403:
+                # Hard auth/WAF block is generally not transient; move to next strategy immediately.
+                return False
             if attempt < max_attempts and r.status_code in (403, 408, 409, 425, 429, 500, 502, 503, 504):
                 sleep_s = attempt * 3
                 print(f"⏳ Retrying proxy in {sleep_s}s...")
@@ -103,21 +132,32 @@ def download_pdf_via_curl_cffi(pdf_url, output_filename):
         return False
 
     safe_pdf_url = pdf_url.replace(" ", "%20")
+    headers = build_browser_headers(safe_pdf_url)
+
     max_attempts = 2
+    impersonations = [
+        os.getenv('CURL_IMPERSONATE', 'chrome120'),
+        'chrome124',
+        'chrome'
+    ]
     for attempt in range(1, max_attempts + 1):
         try:
             print(f"📡 Trying direct browser-impersonated PDF download... (attempt {attempt}/{max_attempts})")
-            r = curl_requests.get(
-                safe_pdf_url,
-                impersonate=os.getenv('CURL_IMPERSONATE', 'chrome120'),
-                timeout=300
-            )
-            if r.status_code == 200:
-                with open(output_filename, 'wb') as f:
-                    f.write(r.content)
-                return True
-            error_preview = (r.text or '')[:500]
-            print(f"❌ Direct PDF fallback error: {r.status_code} - {error_preview}")
+            for imp in impersonations:
+                r = curl_requests.get(
+                    safe_pdf_url,
+                    headers=headers,
+                    impersonate=imp,
+                    timeout=300
+                )
+                if r.status_code == 200:
+                    with open(output_filename, 'wb') as f:
+                        f.write(r.content)
+                    return True
+                error_preview = (r.text or '')[:500]
+                print(f"❌ Direct PDF fallback error [{imp}]: {r.status_code} - {error_preview}")
+                if is_auth_block(r.status_code, error_preview):
+                    return False
         except Exception as e:
             print(f"❌ Direct PDF fallback exception: {e}")
         if attempt < max_attempts:
@@ -158,7 +198,7 @@ async def process_item(client, item):
     # Step 1: Download
     print("⏳ Stage 1: Downloading...")
     if is_pdf:
-        # First try Worker proxy, then a direct browser-impersonated fallback for regional WAF variance.
+        # Strategy order: Worker -> direct browser impersonation.
         if not download_pdf_via_worker(url, output_filename):
             print("⚠️ Worker proxy path failed. Falling back to direct browser-impersonation...")
             if not download_pdf_via_curl_cffi(url, output_filename):
