@@ -4,6 +4,10 @@ on:
   repository_dispatch:
     types: [remote_upload]
 
+concurrency:
+  group: remote-upload-telegram
+  cancel-in-progress: false
+
 jobs:
   upload:
     runs-on: ubuntu-latest

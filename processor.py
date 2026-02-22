@@ -3,8 +3,9 @@ import sys
 import subprocess
 import requests
 from telethon import TelegramClient, events
-from telethon.sessions import StringSession
+from telethon.sessions import StringSession, MemorySession
 from telethon.errors import FloodWaitError
+from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError
 import re
 import asyncio
 import json
@@ -49,6 +50,26 @@ def create_http_session():
 
 
 HTTP_SESSION = create_http_session()
+
+
+async def create_started_client():
+    # Prefer configured StringSession for continuity, but auto-heal if Telegram revoked it.
+    if TELEGRAM_SESSION:
+        client = TelegramClient(StringSession(TELEGRAM_SESSION), API_ID, API_HASH)
+        try:
+            await client.start(bot_token=BOT_TOKEN)
+            return client, "string"
+        except AuthKeyDuplicatedError:
+            print("⚠️ TELEGRAM_SESSION auth key was duplicated across IPs and got revoked by Telegram.")
+            print("⚠️ Falling back to fresh in-memory bot session for this run.")
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    client = TelegramClient(MemorySession(), API_ID, API_HASH)
+    await client.start(bot_token=BOT_TOKEN)
+    return client, "memory"
 
 
 def stream_response_to_file(response, output_filename):
@@ -363,10 +384,12 @@ async def main():
     print(f"🚀 Booting GitHub Remote Uploader. Preparing to process {len(items)} items sequentially...")
 
     # Boot the global reusable Telegram Auth Context
-    client = TelegramClient(StringSession(TELEGRAM_SESSION), API_ID, API_HASH)
-    await client.start(bot_token=BOT_TOKEN)
-    
-    if not TELEGRAM_SESSION:
+    client, session_mode = await create_started_client()
+
+    if session_mode == "memory" and TELEGRAM_SESSION:
+        print("⚠️ Using temporary in-memory bot session because saved TELEGRAM_SESSION was invalid.")
+        print("⚠️ Rotate/regenerate TELEGRAM_SESSION secret if you want to return to persistent sessions.")
+    elif not TELEGRAM_SESSION:
         print("\n\n⚠️ IMPORTANT: No TELEGRAM_SESSION found in environment!")
         print("Please save the following string to your GitHub Secrets as 'TELEGRAM_SESSION' to prevent FloodWaitError bans on future runs:")
         print(client.session.save())
